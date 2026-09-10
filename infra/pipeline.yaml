@@ -48,6 +48,11 @@ Parameters:
       SSM Parameter name holding the PUBLIC key of the Password Safe functional
       account. Passed through to the environment stacks.
 
+Conditions:
+  # l2 is "Prod" -- gate it behind a manual approval before Reconcile runs.
+  # l1 ("Dev") stays fully auto-deploy on push.
+  IsProd: !Equals [!Ref TeamName, l2]
+
 Resources:
 
   ArtifactBucket:
@@ -98,19 +103,10 @@ Resources:
                   - ec2:DeleteSecurityGroup
                   - ec2:AuthorizeSecurityGroup*
                   - ec2:RevokeSecurityGroup*
-                  # environment.yaml's per-instance AWS::EC2::KeyPair (the
-                  # managed account's SSH key -- see docs/RUNBOOK.md 1c) is
-                  # created/deleted under THIS role, not the registrar's --
-                  # CloudFormation invokes the resource handler as the
-                  # stack's own execution role.
                   - ec2:CreateKeyPair
                   - ec2:DeleteKeyPair
                 Resource: '*'
 
-              # AWS::EC2::KeyPair's resource handler writes the generated
-              # private key to SSM Parameter Store itself (as a SecureString
-              # at /ec2/keypair/{KeyPairId}) and deletes it again when the
-              # KeyPair is deleted -- both under this same execution role.
               - Sid: ManageGeneratedKeyPairParameter
                 Effect: Allow
                 Action:
@@ -129,10 +125,6 @@ Resources:
                   StringEquals:
                     kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
 
-              # Encrypted: true with no CMK means the aws/ebs managed key,
-              # whose key policy delegates to IAM -- so the CALLER needs these
-              # or RunInstances fails outright. kms:ViaService keeps them
-              # usable only through EC2, never for decrypting anything else.
               - Sid: EncryptedEbsViaEc2Only
                 Effect: Allow
                 Action:
@@ -147,17 +139,6 @@ Resources:
                   StringEquals:
                     kms:ViaService: !Sub 'ec2.${AWS::Region}.amazonaws.com'
 
-              # Only roles in this team's path, so l1 cannot craft a role that
-              # reads l2's material.
-              #
-              # The List*/Get* actions are not optional: CloudFormation
-              # enumerates attachments before DeleteRole, so without them
-              # creation succeeds and TEARDOWN fails -- the path that runs most
-              # often on ephemeral infrastructure.
-              #
-              # iam:AttachRolePolicy is deliberately NOT here. See below.
-              # Read-only and destructive-but-not-escalating IAM. Safe
-              # without a boundary condition: none of these can widen a role.
               - Sid: ScopedIam
                 Effect: Allow
                 Action:
@@ -179,12 +160,6 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/ps-eph-${TeamName}-*'
                   - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/ps-eph-${TeamName}-*'
 
-              # ESCALATION GUARD.
-              # CreateRole and PutRolePolicy CAN widen a role, so both are
-              # gated on the target carrying the permissions boundary. The
-              # pipeline may create roles all day; it cannot create one that
-              # exceeds the ceiling, and it has no Put/DeleteRolePermissions-
-              # Boundary rights with which to raise that ceiling.
               - Sid: CreateRolesOnlyWithinBoundary
                 Effect: Allow
                 Action:
@@ -196,13 +171,6 @@ Resources:
                     iam:PermissionsBoundary:
                       Fn::ImportValue: !Sub '${RegistrarStackName}-RoleBoundaryArn'
 
-              # PRIVILEGE ESCALATION GUARD.
-              # Unconditioned, iam:AttachRolePolicy lets this role attach
-              # AdministratorAccess to an instance role it just created, then
-              # pass that role to EC2 -- giving any instance full account
-              # access and stepping straight out of the team boundary.
-              # environment.yaml only ever attaches AmazonSSMManagedInstanceCore,
-              # so pin it to exactly that ARN.
               - Sid: OnlySsmCoreMayBeAttached
                 Effect: Allow
                 Action: iam:AttachRolePolicy
@@ -225,8 +193,6 @@ Resources:
                 Resource:
                   Fn::ImportValue: !Sub '${RegistrarStackName}-RegistrarFunctionArn'
 
-              # CloudFormation resolves AWS::SSM::Parameter::Value<String>
-              # using THIS role, so it needs read on the public-key parameter.
               - Sid: ReadFunctionalAccountPublicKey
                 Effect: Allow
                 Action: [ssm:GetParameter, ssm:GetParameters]
@@ -342,26 +308,51 @@ Resources:
       PipelineType: V2
       RoleArn: !GetAtt PipelineRole.Arn
       ArtifactStore: {Type: S3, Location: !Ref ArtifactBucket}
-      Stages:
-        - Name: Source
-          Actions:
-            - Name: Git
-              ActionTypeId:
-                {Category: Source, Owner: AWS, Provider: CodeStarSourceConnection, Version: '1'}
-              Configuration:
-                ConnectionArn: !Ref ConnectionArn
-                FullRepositoryId: !Ref RepositoryId
-                BranchName: !Ref BranchName
-                DetectChanges: true
-              OutputArtifacts: [{Name: Src}]
-
-        - Name: Reconcile
-          Actions:
-            - Name: ConvergeEnvironments
-              ActionTypeId:
-                {Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1'}
-              Configuration: {ProjectName: !Ref ReconcileProject}
-              InputArtifacts: [{Name: Src}]
+      Stages: !If
+        - IsProd
+        - # l2 / Prod: Source -> manual approval -> Reconcile
+          - Name: Source
+            Actions:
+              - Name: Git
+                ActionTypeId:
+                  {Category: Source, Owner: AWS, Provider: CodeStarSourceConnection, Version: '1'}
+                Configuration:
+                  ConnectionArn: !Ref ConnectionArn
+                  FullRepositoryId: !Ref RepositoryId
+                  BranchName: !Ref BranchName
+                  DetectChanges: true
+                OutputArtifacts: [{Name: Src}]
+          - Name: PromoteToProd
+            Actions:
+              - Name: ManualApproval
+                ActionTypeId:
+                  {Category: Approval, Owner: AWS, Provider: Manual, Version: '1'}
+          - Name: Reconcile
+            Actions:
+              - Name: ConvergeEnvironments
+                ActionTypeId:
+                  {Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1'}
+                Configuration: {ProjectName: !Ref ReconcileProject}
+                InputArtifacts: [{Name: Src}]
+        - # l1 / Dev: Source -> Reconcile, unchanged
+          - Name: Source
+            Actions:
+              - Name: Git
+                ActionTypeId:
+                  {Category: Source, Owner: AWS, Provider: CodeStarSourceConnection, Version: '1'}
+                Configuration:
+                  ConnectionArn: !Ref ConnectionArn
+                  FullRepositoryId: !Ref RepositoryId
+                  BranchName: !Ref BranchName
+                  DetectChanges: true
+                OutputArtifacts: [{Name: Src}]
+          - Name: Reconcile
+            Actions:
+              - Name: ConvergeEnvironments
+                ActionTypeId:
+                  {Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1'}
+                Configuration: {ProjectName: !Ref ReconcileProject}
+                InputArtifacts: [{Name: Src}]
 
       # Only fire when THIS team's files change. Without this, an L2 commit
       # would run L1's pipeline.

@@ -49,8 +49,9 @@ Parameters:
       account. Passed through to the environment stacks.
 
 Conditions:
-  # l2 is "Prod" -- gate it behind a manual approval before Reconcile runs.
-  # l1 ("Dev") stays fully auto-deploy on push.
+  # l2 is "Production" -- gate it behind a manual approval before Reconcile
+  # runs, and give the Pipeline resource itself a human-readable name.
+  # l1 ("Development") stays fully auto-deploy on push.
   IsProd: !Equals [!Ref TeamName, l2]
 
 Resources:
@@ -304,13 +305,17 @@ Resources:
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
-      Name: !Sub 'ps-eph-${TeamName}'
+      # Renamed from ps-eph-l1 / ps-eph-l2 -- literal pipeline name is now
+      # Development or Production. NOTE: changing this forces CloudFormation
+      # to replace the Pipeline resource (delete + recreate), not update it
+      # in place.
+      Name: !If [IsProd, Production, Development]
       PipelineType: V2
       RoleArn: !GetAtt PipelineRole.Arn
       ArtifactStore: {Type: S3, Location: !Ref ArtifactBucket}
       Stages: !If
         - IsProd
-        - # l2 / Prod: Source -> manual approval -> Reconcile
+        - # Production: Source -> manual approval -> Reconcile
           - Name: Source
             Actions:
               - Name: Git
@@ -334,7 +339,7 @@ Resources:
                   {Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1'}
                 Configuration: {ProjectName: !Ref ReconcileProject}
                 InputArtifacts: [{Name: Src}]
-        - # l1 / Dev: Source -> Reconcile, unchanged
+        - # Development: Source -> Reconcile, unchanged
           - Name: Source
             Actions:
               - Name: Git

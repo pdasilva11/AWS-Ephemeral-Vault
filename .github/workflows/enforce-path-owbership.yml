@@ -1,0 +1,24 @@
+name: Enforce path ownership
+on:
+  pull_request:
+    paths: ['teams/**']
+
+jobs:
+  check-ownership:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - run: |
+          git fetch origin ${{ github.base_ref }}
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- teams/)
+          BAD=0
+          for f in $CHANGED; do
+            TEAM=$(echo "$f" | cut -d/ -f2)
+            case "${{ github.event.pull_request.user.login }}" in
+              <devops-l1-github-username>) [ "$TEAM" = "l1" ] || BAD=1 ;;
+              <devops-l2-github-username>) [ "$TEAM" = "l2" ] || BAD=1 ;;
+              *) BAD=1 ;;
+            esac
+          done
+          [ "$BAD" = "1" ] && { echo "::error::not permitted to modify another team's env files"; exit 1; } || true

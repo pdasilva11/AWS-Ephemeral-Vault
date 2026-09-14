@@ -1,14 +1,15 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Per-team delivery pipeline. Deploy this stack TWICE - once with TeamName=l1,
-  once with TeamName=l2. Each gets its own role, its own artifact bucket and a
-  CFN execution role that can only touch stacks tagged for that team. This is
-  the IAM half of the isolation model; the Password Safe half is the Workgroup.
+  Per-team delivery pipeline. Deploy this stack TWICE - once with
+  TeamName=devops-dev, once with TeamName=devops-prod. Each gets its own
+  role, its own artifact bucket and a CFN execution role that can only touch
+  stacks tagged for that team. This is the IAM half of the isolation model;
+  the Password Safe half is the Workgroup.
 
 Parameters:
   TeamName:
     Type: String
-    AllowedValues: [l1, l2]
+    AllowedValues: [devops-dev, devops-prod]
 
   OwnerTag:
     Type: String
@@ -49,10 +50,10 @@ Parameters:
       account. Passed through to the environment stacks.
 
 Conditions:
-  # l2 is "Production" -- gate it behind a manual approval before Reconcile
-  # runs, and give the Pipeline resource itself a human-readable name.
-  # l1 ("Development") stays fully auto-deploy on push.
-  IsProd: !Equals [!Ref TeamName, l2]
+  # devops-prod is "Production" -- gate it behind a manual approval before
+  # Reconcile runs, and give the Pipeline resource itself a human-readable
+  # name. devops-dev ("Development") stays fully auto-deploy on push.
+  IsProd: !Equals [!Ref TeamName, devops-prod]
 
 Resources:
 
@@ -305,18 +306,13 @@ Resources:
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
-      # Renamed from ps-eph-l1 / ps-eph-l2 -- literal pipeline name is now
-      # Development or Production. NOTE: changing this forces CloudFormation
-      # to replace the Pipeline resource (delete + recreate), not update it
-      # in place.
       Name: !If [IsProd, Production, Development]
       PipelineType: V2
       RoleArn: !GetAtt PipelineRole.Arn
       ArtifactStore: {Type: S3, Location: !Ref ArtifactBucket}
       Stages: !If
         - IsProd
-        - # Production: Source -> manual approval -> Reconcile
-          - Name: Source
+        - - Name: Source
             Actions:
               - Name: Git
                 ActionTypeId:
@@ -339,8 +335,7 @@ Resources:
                   {Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1'}
                 Configuration: {ProjectName: !Ref ReconcileProject}
                 InputArtifacts: [{Name: Src}]
-        - # Development: Source -> Reconcile, unchanged
-          - Name: Source
+        - - Name: Source
             Actions:
               - Name: Git
                 ActionTypeId:
@@ -359,8 +354,6 @@ Resources:
                 Configuration: {ProjectName: !Ref ReconcileProject}
                 InputArtifacts: [{Name: Src}]
 
-      # Only fire when THIS team's files change. Without this, an L2 commit
-      # would run L1's pipeline.
       Triggers:
         - ProviderType: CodeStarSourceConnection
           GitConfiguration:

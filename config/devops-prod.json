@@ -1,5 +1,5 @@
 {
-  "team": "l2",
+  "team": "devops-prod",
   "teamDisplayName": "DevOps L2",
   "aws": {
     "region": "us-east-1",

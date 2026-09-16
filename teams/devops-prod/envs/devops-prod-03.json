@@ -1,0 +1,5 @@
+{
+  "envName": "devops-prod-03",
+  "instanceType": "t3.micro",
+  "requestedBy": "ramon01pro"
+}

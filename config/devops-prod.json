@@ -11,13 +11,10 @@
     "smartRuleSystems": "SR-L2-Systems",
     "smartRuleAccounts": "SR-L2-Accounts",
     "consumerGroup": "GRP-DevOps-L2",
-    "localAccountName": "ec2-svc",
-    "functionalAccountName": "ps-rotator",
     "platformName": "Linux",
     "port": 22,
     "timeout": 30,
     "elevationCommand": "sudo",
-    "sshKeyEnforcementMode": 0,
     "releaseDuration": 120,
     "maxReleaseDuration": 525600,
     "isaReleaseDuration": 120,
@@ -27,7 +24,30 @@
     "checkPassword": false,
     "resetOnMismatch": false,
     "changePasswordAfterRelease": true,
-    "passwordRuleId": 0
+    "passwordRuleId": 0,
+
+    "accounts": [
+      {
+        "accountType": "managed",
+        "localAccountName": "ec2-svc",
+        "authType": "ssh_key",
+        "enableSSHKeyAuth": true,
+        "sshKeyEnforcementMode": 0
+      },
+      {
+        "accountType": "managed",
+        "localAccountName": "ec2-user-prod",
+        "authType": "password",
+        "passwordVaultPath": "ps-ephemeral/prod/ec2-user-prod",
+        "enableSSHKeyAuth": false
+      }
+    ],
+
+    "functionalAccount": {
+      "functionalAccountName": "ps-rotator",
+      "authType": "ssh_key",
+      "enableSSHKeyAuth": true
+    }
   },
   "tags": {
     "Owner": "DevOpsL2",

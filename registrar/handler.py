@@ -292,19 +292,23 @@ def on_create(props):
     private_ip = props["PrivateIp"]
     asset_name = props["AssetName"]
     key_pair_id = props.get("KeyPairId")
-
+    
+    # Get passwordSafe config (allows both nested and root-level access)
+    password_safe_cfg = cfg.get("passwordSafe", cfg)
+    
     # Support both old single-account and new multi-account config formats
-    accounts = cfg.get("accounts", [])
+    accounts = password_safe_cfg.get("accounts", cfg.get("accounts", []))
     if not accounts:
         # Backward compatibility: convert single-account to array format
         accounts = [{
-            "localAccountName": cfg.get("localAccountName", "ec2-svc"),
-            "authType": cfg.get("authType", "ssh_key"),
-            "enableSSHKeyAuth": cfg.get("enableSSHKeyAuth", True),
+            "localAccountName": password_safe_cfg.get("localAccountName", cfg.get("localAccountName", "ec2-svc")),
+            "authType": password_safe_cfg.get("authType", cfg.get("authType", "ssh_key")),
+            "enableSSHKeyAuth": password_safe_cfg.get("enableSSHKeyAuth", cfg.get("enableSSHKeyAuth", True)),
         }]
 
-    functional_name = cfg.get("functionalAccountName", "ps-rotator")
-    password_safe_cfg = cfg.get("passwordSafe", cfg)  # Allow nested config
+    # Read functionalAccountName from nested functionalAccount object
+    functional_account_cfg = password_safe_cfg.get("functionalAccount", {})
+    functional_name = functional_account_cfg.get("functionalAccountName", "ps-rotator")
 
     wait_for_ssm(instance_id)
 
@@ -321,16 +325,16 @@ def on_create(props):
 
     # 2. Provision each managed account
     account_metadata = {}
-
+    
     for account in accounts:
         account_name = account.get("localAccountName", "ec2-svc")
         auth_type = account.get("authType", "ssh_key")
-
+        
         if auth_type == "ssh_key":
             # SSH key-based authentication
             if not key_pair_id:
                 raise ValueError(f"KeyPairId required for SSH key auth account {account_name}")
-
+            
             private_key = ec2_keypair.read_private_key(ssm, key_pair_id)
             try:
                 public_key = openssh_public_key(private_key, comment=account_name)
@@ -343,7 +347,7 @@ def on_create(props):
                 "private_key": private_key,
                 "public_key": public_key,
             }
-
+            
         elif auth_type == "password":
             # Password-based authentication
             password = generate_random_password()
@@ -387,10 +391,10 @@ def on_create(props):
             account_name = account.get("localAccountName")
             auth_type = account.get("authType", "ssh_key")
             metadata = account_metadata.get(account_name, {})
-
+            
             # Merge account-specific config with base config
             account_cfg = {**password_safe_cfg, **account}
-
+            
             if auth_type == "ssh_key":
                 managed_account = ps.create_managed_account(
                     system_id, account_name, account_cfg, platform=platform,
@@ -400,10 +404,10 @@ def on_create(props):
                 managed_account = ps.create_managed_account(
                     system_id, account_name, account_cfg, platform=platform,
                     password=metadata["password"], workgroup_id=workgroup_id)
-
+            
             account_id = managed_account["ManagedAccountID"]
             physical_parts.append(f"{account_name}:{account_id}")
-
+            
             # Force immediate rotation for SSH key accounts
             if auth_type == "ssh_key":
                 try:
@@ -428,7 +432,6 @@ def on_create(props):
         "AssetName": asset_name,
         "Workgroup": password_safe_cfg["workgroupName"],
     }
-
 
 def on_update(physical_id, props):
     """Ids are stable across updates -- never return a new PhysicalResourceId

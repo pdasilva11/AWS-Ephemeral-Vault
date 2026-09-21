@@ -31,6 +31,8 @@ import logging
 import os
 import time
 import urllib.request
+import secrets
+import string
 
 import boto3
 
@@ -104,6 +106,12 @@ def read_public_key():
         return ssm.get_parameter(Name=FUNCTIONAL_PUBKEY_PARAM)["Parameter"]["Value"]
     except ssm.exceptions.ParameterNotFound:
         return None
+
+
+def generate_random_password(length=32):
+    """Generate a secure random password for password-auth accounts."""
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
 def wait_for_ssm(instance_id):
@@ -231,9 +239,37 @@ def provision_local_account_with_key(instance_id, username, public_key):
     log.info("managed account %s key-provisioned on %s", username, instance_id)
 
 
+def provision_local_account_with_password(instance_id, username, password):
+    """
+    Create (or converge) the managed account with password authentication.
+    Password Safe will manage the password lifecycle via rotation.
+
+    Enables SSH password authentication in sshd_config and sets the password
+    via chpasswd (which never echoes the password to stdout/stderr).
+    """
+    script = [
+        "set -euo pipefail",
+        f"id -u {username} >/dev/null 2>&1 || useradd -m -s /bin/bash {username}",
+        # Set password securely via stdin
+        f"echo '{username}:{password}' | chpasswd",
+        # Enable password authentication in SSH
+        "sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config || true",
+        "sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config || true",
+        # Ensure PubkeyAuthentication is still on (for other accounts)
+        "sed -i 's/^PubkeyAuthentication no/PubkeyAuthentication yes/' /etc/ssh/sshd_config || true",
+        "systemctl restart sshd",
+        # Verify account exists
+        f"id -u {username} >/dev/null",
+    ]
+    run_command(instance_id, script)
+    log.info("managed account %s password-provisioned on %s", username, instance_id)
+
+
 def reprocess_rules(ps, cfg):
     """Best-effort: a rule that will not reprocess must not fail the stack."""
-    for title in (cfg["smartRuleSystems"], cfg["smartRuleAccounts"]):
+    for title in (cfg.get("smartRuleSystems"), cfg.get("smartRuleAccounts")):
+        if not title:
+            continue
         try:
             rule = ps.find_smart_rule(title)
             if rule:
@@ -255,10 +291,20 @@ def on_create(props):
     instance_id = props["InstanceId"]
     private_ip = props["PrivateIp"]
     asset_name = props["AssetName"]
-    account_name = cfg.get("localAccountName", "ec2-svc")
-    key_pair_id = props["KeyPairId"]
+    key_pair_id = props.get("KeyPairId")
+
+    # Support both old single-account and new multi-account config formats
+    accounts = cfg.get("accounts", [])
+    if not accounts:
+        # Backward compatibility: convert single-account to array format
+        accounts = [{
+            "localAccountName": cfg.get("localAccountName", "ec2-svc"),
+            "authType": cfg.get("authType", "ssh_key"),
+            "enableSSHKeyAuth": cfg.get("enableSSHKeyAuth", True),
+        }]
 
     functional_name = cfg.get("functionalAccountName", "ps-rotator")
+    password_safe_cfg = cfg.get("passwordSafe", cfg)  # Allow nested config
 
     wait_for_ssm(instance_id)
 
@@ -267,100 +313,120 @@ def on_create(props):
     if functional_public_key:
         provision_functional_account(instance_id, functional_name,
                                      functional_public_key,
-                                     cfg.get("elevationCommand", "sudo"))
+                                     password_safe_cfg.get("elevationCommand", "sudo"))
     else:
         log.warning("no public key at %s -- relying on user-data having "
                     "provisioned %s correctly", FUNCTIONAL_PUBKEY_PARAM,
                     functional_name)
 
-    # 2. The managed account itself. AWS::EC2::KeyPair (environment.yaml)
-    # generated this key, not this function -- we read the private half
-    # once, in memory, to hand to Password Safe below, and derive the public
-    # half to install on the box. Neither half is ever written to
-    # CloudFormation, a template parameter, or anywhere on local disk.
-    private_key = ec2_keypair.read_private_key(ssm, key_pair_id)
-    try:
-        public_key = openssh_public_key(private_key, comment=account_name)
-    except KeyParseError as exc:
-        raise RuntimeError(f"could not derive public key from EC2 key pair "
-                           f"{key_pair_id}: {exc}") from exc
-    provision_local_account_with_key(instance_id, account_name, public_key)
+    # 2. Provision each managed account
+    account_metadata = {}
+
+    for account in accounts:
+        account_name = account.get("localAccountName", "ec2-svc")
+        auth_type = account.get("authType", "ssh_key")
+
+        if auth_type == "ssh_key":
+            # SSH key-based authentication
+            if not key_pair_id:
+                raise ValueError(f"KeyPairId required for SSH key auth account {account_name}")
+
+            private_key = ec2_keypair.read_private_key(ssm, key_pair_id)
+            try:
+                public_key = openssh_public_key(private_key, comment=account_name)
+            except KeyParseError as exc:
+                raise RuntimeError(f"could not derive public key from EC2 key pair "
+                                   f"{key_pair_id}: {exc}") from exc
+            provision_local_account_with_key(instance_id, account_name, public_key)
+            account_metadata[account_name] = {
+                "authType": "ssh_key",
+                "private_key": private_key,
+                "public_key": public_key,
+            }
+
+        elif auth_type == "password":
+            # Password-based authentication
+            password = generate_random_password()
+            provision_local_account_with_password(instance_id, account_name, password)
+            account_metadata[account_name] = {
+                "authType": "password",
+                "password": password,
+            }
+        else:
+            raise ValueError(f"unknown authType {auth_type} for account {account_name}")
 
     client_id, client_secret = load_ps_credentials()
     with PasswordSafeClient(PS_BASE_URL, client_id, client_secret) as ps:
-        wg = ps.get_workgroup(cfg["workgroupName"])
+        wg = ps.get_workgroup(password_safe_cfg["workgroupName"])
         workgroup_id = wg.get("ID") or wg.get("WorkgroupID")
-        platform = ps.get_platform(cfg.get("platformName", "Linux"))
+        platform = ps.get_platform(password_safe_cfg.get("platformName", "Linux"))
         platform_id = platform["PlatformID"]
 
-        # 3. Functional account in the vault. Password Safe rotates the managed
-        # account by logging in AS this identity, so FunctionalAccountID is
-        # mandatory whenever AutoManagementFlag is true.
-        #
-        # One object serves the whole fleet: get-or-create, never create-again.
+        # 3. Functional account in the vault
         functional_account_id = ps.ensure_functional_account(
             platform, functional_name,
-            elevation_command=cfg.get("elevationCommand", "sudo"),
+            elevation_command=password_safe_cfg.get("elevationCommand", "sudo"),
             description="ps-ephemeral-ec2 rotation identity",
             **load_functional_credential(),
         )
 
-        # One call: the managed system is created directly in the Workgroup,
-        # so it can never briefly exist outside the team's Smart Rule scope.
-        # A managed system with no DSSKeyRuleID does not error when asked
-        # to rotate an SSH-key account -- it just silently rotates the
-        # account's PASSWORD instead via Credentials/Change, which is
-        # useless here (the account has password auth locked, see
-        # provision_local_account_with_key) and leaves authorized_keys
-        # untouched. See docs/RUNBOOK.md section 1b.
-        dss_key_rule_id = ps.get_dss_key_rule_id(cfg.get("dssKeyRuleName"))
+        # 4. Create managed system in the vault
+        dss_key_rule_id = ps.get_dss_key_rule_id(password_safe_cfg.get("dssKeyRuleName"))
         system = ps.create_managed_system_in_workgroup(
             workgroup_id, platform_id, functional_account_id,
             system_name=asset_name,
             ip_address=private_ip,
             dns_name=props.get("PrivateDnsName") or asset_name,
-            cfg={**cfg, "dssKeyRuleId": dss_key_rule_id},
+            cfg={**password_safe_cfg, "dssKeyRuleId": dss_key_rule_id},
         )
         system_id = system["ManagedSystemID"]
 
-        account = ps.create_managed_account(
-            system_id, account_name, cfg, platform=platform,
-            private_key=private_key, workgroup_id=workgroup_id)
-        account_id = account["ManagedAccountID"]
+        # 5. Create managed accounts in vault (one per instance account)
+        physical_parts = []
+        for account in accounts:
+            account_name = account.get("localAccountName")
+            auth_type = account.get("authType", "ssh_key")
+            metadata = account_metadata.get(account_name, {})
 
-        # Force an immediate rotation now, rather than waiting for Password
-        # Safe's own DSS rotation schedule (which may be weeks away, see
-        # cfg.changeFrequencyType) to be the first time anyone discovers a
-        # broken Resource Broker path or an elevation problem.
-        #
-        # DSSAutoManagementFlag=true means Password Safe now generates and
-        # installs this account's NEXT key itself, by logging in as the
-        # functional account and elevating with ITS sudo rule. That rule is
-        # currently scoped to chpasswd/passwd (see provision_functional_account
-        # and environment.yaml's user-data) -- which is known-sufficient for
-        # PASSWORD rotation but has NOT been confirmed sufficient for writing
-        # a Linux account's ~/.ssh/authorized_keys. If this fails, that is the
-        # first thing to check -- see docs/RUNBOOK.md section 1b for how to
-        # find the exact command Password Safe tried to run and widen the
-        # sudoers rule to match.
-        try:
-            ps.rotate_credential(account_id)
-        except PasswordSafeError as exc:
-            log.warning("INITIAL KEY ROTATION FAILED (%s) for %s. Check: (1) "
-                        "the functional account can reach %s on port %s, "
-                        "(2) its sudo rule can write %s's authorized_keys -- "
-                        "see docs/RUNBOOK.md section 1b.", exc, account_name,
-                        private_ip, cfg.get("port", 22), account_name)
+            # Merge account-specific config with base config
+            account_cfg = {**password_safe_cfg, **account}
 
-        reprocess_rules(ps, cfg)
+            if auth_type == "ssh_key":
+                managed_account = ps.create_managed_account(
+                    system_id, account_name, account_cfg, platform=platform,
+                    private_key=metadata["private_key"], workgroup_id=workgroup_id)
+            else:
+                # Password-based account
+                managed_account = ps.create_managed_account(
+                    system_id, account_name, account_cfg, platform=platform,
+                    password=metadata["password"], workgroup_id=workgroup_id)
 
-    physical_id = f"{system_id}:{account_id}"
+            account_id = managed_account["ManagedAccountID"]
+            physical_parts.append(f"{account_name}:{account_id}")
+
+            # Force immediate rotation for SSH key accounts
+            if auth_type == "ssh_key":
+                try:
+                    ps.rotate_credential(account_id)
+                except PasswordSafeError as exc:
+                    log.warning("INITIAL KEY ROTATION FAILED (%s) for %s. Check: (1) "
+                                "the functional account can reach %s on port %s, "
+                                "(2) its sudo rule can write %s's authorized_keys -- "
+                                "see docs/RUNBOOK.md section 1b.", exc, account_name,
+                                private_ip, password_safe_cfg.get("port", 22), account_name)
+            else:
+                log.info("password account %s created -- Password Safe will manage "
+                         "password rotations per schedule", account_name)
+
+        reprocess_rules(ps, password_safe_cfg)
+
+    physical_id = f"{system_id}:{','.join(physical_parts)}"
     log.info("onboarded %s as %s", asset_name, physical_id)
     return physical_id, {
         "ManagedSystemId": str(system_id),
-        "ManagedAccountId": str(account_id),
-        "AccountName": account_name,
-        "Workgroup": cfg["workgroupName"],
+        "ManagedAccounts": physical_parts,
+        "AssetName": asset_name,
+        "Workgroup": password_safe_cfg["workgroupName"],
     }
 
 
@@ -369,20 +435,28 @@ def on_update(physical_id, props):
     here, or CloudFormation will schedule a Delete on the old one."""
     cfg = json.loads(props["Config"]) if isinstance(props["Config"], str) \
         else props["Config"]
+    password_safe_cfg = cfg.get("passwordSafe", cfg)
+
     try:
-        _system_id, account_id = physical_id.split(":")
-    except ValueError:
+        parts = physical_id.split(":")
+        system_id = parts[0]
+        account_parts = parts[1:] if len(parts) > 1 else []
+    except (ValueError, IndexError):
         log.warning("unparseable physical id %r on update -- no-op", physical_id)
         return physical_id, {}
 
     client_id, client_secret = load_ps_credentials()
     with PasswordSafeClient(PS_BASE_URL, client_id, client_secret) as ps:
-        try:
-            ps.rotate_credential(int(account_id))
-        except PasswordSafeError as exc:
-            log.warning("rotation on update failed: %s", exc)
-        reprocess_rules(ps, cfg)
-    return physical_id, {"ManagedAccountId": account_id}
+        # Rotate all managed accounts
+        for account_part in account_parts:
+            try:
+                account_id = account_part.split(":")[-1]
+                ps.rotate_credential(int(account_id))
+            except (ValueError, PasswordSafeError) as exc:
+                log.warning("rotation on update failed for %s: %s", account_part, exc)
+        reprocess_rules(ps, password_safe_cfg)
+
+    return physical_id, {"ManagedAccounts": account_parts}
 
 
 def on_delete(physical_id, props):
@@ -392,23 +466,33 @@ def on_delete(physical_id, props):
         return
 
     try:
-        system_id, account_id = physical_id.split(":")
-    except ValueError:
+        parts = physical_id.split(":")
+        system_id = parts[0]
+        account_parts = parts[1:] if len(parts) > 1 else []
+    except (ValueError, IndexError):
         log.warning("unparseable physical id %r -- nothing to deregister",
                     physical_id)
         return
 
     try:
-        cfg = json.loads(props["Config"]) if isinstance(props.get("Config"), str) \
+        cfg = json.loads(props.get("Config", "{}")) if isinstance(props.get("Config"), str) \
             else props.get("Config", {})
+        password_safe_cfg = cfg.get("passwordSafe", cfg)
+
         client_id, client_secret = load_ps_credentials()
         with PasswordSafeClient(PS_BASE_URL, client_id, client_secret) as ps:
-            # Account first, then its system. Both are idempotent; a 404 on
-            # either is treated as already-done.
-            ps.delete_managed_account(int(account_id))
+            # Delete all managed accounts first, then the system
+            for account_part in account_parts:
+                try:
+                    account_id = account_part.split(":")[-1]
+                    ps.delete_managed_account(int(account_id))
+                except (ValueError, PasswordSafeError) as exc:
+                    log.error("failed to delete account %s: %s", account_part, exc)
+
             ps.delete_managed_system(int(system_id))
-            if cfg:
-                reprocess_rules(ps, cfg)
+
+            if password_safe_cfg:
+                reprocess_rules(ps, password_safe_cfg)
         log.info("deregistered %s", physical_id)
     except Exception as exc:                       # noqa: BLE001 - intentional
         log.error("DEREGISTRATION FAILED for %s: %s -- stack delete will "

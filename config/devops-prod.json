@@ -43,11 +43,10 @@
       }
     ],
 
+    "functionalAccountName": "ps-rotator",
     "functionalAccount": {
-      "functionalAccountName": "ps-rotator",
       "authType": "ssh_key",
       "enableSSHKeyAuth": true
-    }
   },
   "tags": {
     "Owner": "DevOpsL2",

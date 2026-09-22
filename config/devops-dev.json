@@ -44,10 +44,9 @@
     ],
     
     "functionalAccount": {
-      "functionalAccountName": "ps-rotator",
+      "functionalAccount": {
       "authType": "ssh_key",
       "enableSSHKeyAuth": true
-    }
   },
   "tags": {
     "Owner": "DevOpsL1",

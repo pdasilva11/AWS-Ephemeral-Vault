@@ -400,12 +400,13 @@ def on_create(props):
                     system_id, account_name, account_cfg, platform=platform,
                     private_key=metadata["private_key"], workgroup_id=workgroup_id)
             else:
-                # Password-based account - ensure cfg has required fields
+                # Password-based account
+                account_cfg["Password"] = metadata["password"]
                 account_cfg["AutoManagementFlag"] = True
                 account_cfg["ChangePasswordAfterAnyReleaseFlag"] = True
                 managed_account = ps.create_managed_account(
                     system_id, account_name, account_cfg, platform=platform,
-                    password=metadata["password"], workgroup_id=workgroup_id)
+                    workgroup_id=workgroup_id)
             
             account_id = managed_account["ManagedAccountID"]
             physical_parts.append(f"{account_name}:{account_id}")

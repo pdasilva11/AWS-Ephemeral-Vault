@@ -243,7 +243,7 @@ def provision_local_account_with_password(instance_id, username, password):
     """
     Create (or converge) the managed account with password authentication.
     Password Safe will manage the password lifecycle via rotation.
-
+    
     Enables SSH password authentication in sshd_config and sets the password
     via chpasswd (which never echoes the password to stdout/stderr).
     """
@@ -292,10 +292,10 @@ def on_create(props):
     private_ip = props["PrivateIp"]
     asset_name = props["AssetName"]
     key_pair_id = props.get("KeyPairId")
-
+    
     # Get passwordSafe config (allows both nested and root-level access)
     password_safe_cfg = cfg.get("passwordSafe", cfg)
-
+    
     # Support both old single-account and new multi-account config formats
     accounts = password_safe_cfg.get("accounts", cfg.get("accounts", []))
     if not accounts:
@@ -325,16 +325,16 @@ def on_create(props):
 
     # 2. Provision each managed account
     account_metadata = {}
-
+    
     for account in accounts:
         account_name = account.get("localAccountName", "ec2-svc")
         auth_type = account.get("authType", "ssh_key")
-
+        
         if auth_type == "ssh_key":
             # SSH key-based authentication
             if not key_pair_id:
                 raise ValueError(f"KeyPairId required for SSH key auth account {account_name}")
-
+            
             private_key = ec2_keypair.read_private_key(ssm, key_pair_id)
             try:
                 public_key = openssh_public_key(private_key, comment=account_name)
@@ -347,7 +347,7 @@ def on_create(props):
                 "private_key": private_key,
                 "public_key": public_key,
             }
-
+            
         elif auth_type == "password":
             # Password-based authentication
             password = generate_random_password()
@@ -381,7 +381,7 @@ def on_create(props):
             system_name=asset_name,
             ip_address=private_ip,
             dns_name=props.get("PrivateDnsName") or asset_name,
-            cfg={**password_safe_cfg, "dssKeyRuleId": dss_key_rule_id},
+            cfg={**password_safe_cfg, "dssKeyRuleId": dss_key_rule_id, "functionalAccountName": functional_name},
         )
         system_id = system["ManagedSystemID"]
 
@@ -391,10 +391,10 @@ def on_create(props):
             account_name = account.get("localAccountName")
             auth_type = account.get("authType", "ssh_key")
             metadata = account_metadata.get(account_name, {})
-
+            
             # Merge account-specific config with base config
-            account_cfg = {**password_safe_cfg, **account}
-
+            account_cfg = {**password_safe_cfg, **account, "functionalAccountName": functional_name}
+            
             if auth_type == "ssh_key":
                 managed_account = ps.create_managed_account(
                     system_id, account_name, account_cfg, platform=platform,
@@ -404,10 +404,10 @@ def on_create(props):
                 managed_account = ps.create_managed_account(
                     system_id, account_name, account_cfg, platform=platform,
                     password=metadata["password"], workgroup_id=workgroup_id)
-
+            
             account_id = managed_account["ManagedAccountID"]
             physical_parts.append(f"{account_name}:{account_id}")
-
+            
             # Force immediate rotation for SSH key accounts
             if auth_type == "ssh_key":
                 try:
@@ -440,7 +440,7 @@ def on_update(physical_id, props):
     cfg = json.loads(props["Config"]) if isinstance(props["Config"], str) \
         else props["Config"]
     password_safe_cfg = cfg.get("passwordSafe", cfg)
-
+    
     try:
         parts = physical_id.split(":")
         system_id = parts[0]
@@ -459,7 +459,7 @@ def on_update(physical_id, props):
             except (ValueError, PasswordSafeError) as exc:
                 log.warning("rotation on update failed for %s: %s", account_part, exc)
         reprocess_rules(ps, password_safe_cfg)
-
+    
     return physical_id, {"ManagedAccounts": account_parts}
 
 
@@ -482,7 +482,7 @@ def on_delete(physical_id, props):
         cfg = json.loads(props.get("Config", "{}")) if isinstance(props.get("Config"), str) \
             else props.get("Config", {})
         password_safe_cfg = cfg.get("passwordSafe", cfg)
-
+        
         client_id, client_secret = load_ps_credentials()
         with PasswordSafeClient(PS_BASE_URL, client_id, client_secret) as ps:
             # Delete all managed accounts first, then the system
@@ -492,9 +492,9 @@ def on_delete(physical_id, props):
                     ps.delete_managed_account(int(account_id))
                 except (ValueError, PasswordSafeError) as exc:
                     log.error("failed to delete account %s: %s", account_part, exc)
-
+            
             ps.delete_managed_system(int(system_id))
-
+            
             if password_safe_cfg:
                 reprocess_rules(ps, password_safe_cfg)
         log.info("deregistered %s", physical_id)

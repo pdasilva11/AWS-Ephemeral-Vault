@@ -43,8 +43,8 @@
       }
     ],
     
+    "functionalAccountName": "ps-rotator",
     "functionalAccount": {
-      "functionalAccount": {
       "authType": "ssh_key",
       "enableSSHKeyAuth": true
   },

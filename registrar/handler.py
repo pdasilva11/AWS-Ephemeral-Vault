@@ -308,7 +308,6 @@ def on_create(props):
 
     # Read functionalAccountName from nested functionalAccount object
     functional_name = password_safe_cfg.get("functionalAccountName", "ps-rotator")
-    functional_name = functional_account_cfg.get("functionalAccountName", "ps-rotator")
 
     wait_for_ssm(instance_id)
 

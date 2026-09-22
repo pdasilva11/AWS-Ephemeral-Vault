@@ -386,6 +386,7 @@ def on_create(props):
 
         # 5. Create managed accounts in vault (one per instance account)
         physical_parts = []
+        account_ids = []
         for account in accounts:
             account_name = account.get("localAccountName")
             auth_type = account.get("authType", "ssh_key")
@@ -399,15 +400,12 @@ def on_create(props):
                     system_id, account_name, account_cfg, platform=platform,
                     private_key=metadata["private_key"], workgroup_id=workgroup_id)
             else:
-                # Password-based account
-                account_cfg["Password"] = metadata["password"]
-                account_cfg["AutoManagementFlag"] = True
-                account_cfg["ChangePasswordAfterAnyReleaseFlag"] = True
                 managed_account = ps.create_managed_account(
                     system_id, account_name, account_cfg, platform=platform,
-                    workgroup_id=workgroup_id)
+                    password=metadata["password"], workgroup_id=workgroup_id)
             
             account_id = managed_account["ManagedAccountID"]
+            account_ids.append(str(account_id))
             physical_parts.append(f"{account_name}:{account_id}")
             
             # Force immediate rotation for SSH key accounts
@@ -426,11 +424,13 @@ def on_create(props):
 
         reprocess_rules(ps, password_safe_cfg)
 
-    physical_id = f"{system_id}:{','.join(physical_parts)}"
+    physical_id = f"{system_id}:{','.join(account_ids)}"
     log.info("onboarded %s as %s", asset_name, physical_id)
     return physical_id, {
         "ManagedSystemId": str(system_id),
-        "ManagedAccounts": physical_parts,
+        "ManagedAccountId": account_ids[0],
+        "AccountName": accounts[0].get("localAccountName", ""),
+        "ManagedAccounts": ",".join(physical_parts),
         "AssetName": asset_name,
         "Workgroup": password_safe_cfg["workgroupName"],
     }
@@ -446,7 +446,8 @@ def on_update(physical_id, props):
     try:
         parts = physical_id.split(":")
         system_id = parts[0]
-        account_parts = parts[1:] if len(parts) > 1 else []
+        account_parts = [t for chunk in parts[1:]
+                         for t in chunk.split(",") if t.isdigit()]
     except (ValueError, IndexError):
         log.warning("unparseable physical id %r on update -- no-op", physical_id)
         return physical_id, {}
@@ -474,7 +475,8 @@ def on_delete(physical_id, props):
     try:
         parts = physical_id.split(":")
         system_id = parts[0]
-        account_parts = parts[1:] if len(parts) > 1 else []
+        account_parts = [t for chunk in parts[1:]
+                         for t in chunk.split(",") if t.isdigit()]
     except (ValueError, IndexError):
         log.warning("unparseable physical id %r -- nothing to deregister",
                     physical_id)

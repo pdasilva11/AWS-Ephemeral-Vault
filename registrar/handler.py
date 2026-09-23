@@ -306,7 +306,8 @@ def on_create(props):
             "enableSSHKeyAuth": password_safe_cfg.get("enableSSHKeyAuth", cfg.get("enableSSHKeyAuth", True)),
         }]
 
-    # Read functionalAccountName from nested functionalAccount object
+    # functionalAccountName sits at the root of the passwordSafe config;
+    # reconcile.py reads it there too (scripts/reconcile.py, team_cfg lookup).
     functional_name = password_safe_cfg.get("functionalAccountName", "ps-rotator")
 
     wait_for_ssm(instance_id)

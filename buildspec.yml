@@ -11,7 +11,9 @@ phases:
       - python -c "import json,glob,sys; [json.load(open(f)) for f in glob.glob('config/*.json')+glob.glob('teams/*/envs/*.json')]"
   build:
     commands:
-      # Converge deployed stacks with the manifests declared in Git.
+      - cd registrar && zip -qr /tmp/registrar.zip . && cd ..
+      - aws lambda update-function-code --function-name ps-registrar-registrar --zip-file fileb:///tmp/registrar.zip
+      - aws lambda wait function-updated --function-name ps-registrar-registrar
       - python scripts/reconcile.py --team "$TEAM"
  
 artifacts:

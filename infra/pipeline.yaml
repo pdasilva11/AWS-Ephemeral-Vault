@@ -1,15 +1,14 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Per-team delivery pipeline. Deploy this stack TWICE - once with
-  TeamName=devops-dev, once with TeamName=devops-prod. Each gets its own
-  role, its own artifact bucket and a CFN execution role that can only touch
-  stacks tagged for that team. This is the IAM half of the isolation model;
-  the Password Safe half is the Workgroup.
+  Per-team delivery pipeline. Deploy this stack TWICE - once with TeamName=l1,
+  once with TeamName=l2. Each gets its own role, its own artifact bucket and a
+  CFN execution role that can only touch stacks tagged for that team. This is
+  the IAM half of the isolation model; the Password Safe half is the Workgroup.
 
 Parameters:
   TeamName:
     Type: String
-    AllowedValues: [devops-dev, devops-prod]
+    AllowedValues: [l1, l2]
 
   OwnerTag:
     Type: String
@@ -50,10 +49,10 @@ Parameters:
       account. Passed through to the environment stacks.
 
 Conditions:
-  # devops-prod is "Production" -- gate it behind a manual approval before
-  # Reconcile runs, and give the Pipeline resource itself a human-readable
-  # name. devops-dev ("Development") stays fully auto-deploy on push.
-  IsProd: !Equals [!Ref TeamName, devops-prod]
+  # l2 is "Production" -- gate it behind a manual approval before Reconcile
+  # runs, and give the Pipeline resource itself a human-readable name.
+  # l1 ("Development") stays fully auto-deploy on push.
+  IsProd: !Equals [!Ref TeamName, l2]
 
 Resources:
 
@@ -250,6 +249,23 @@ Resources:
                   StringEquals:
                     iam:PassedToService: cloudformation.amazonaws.com
 
+              # The registrar Lambda is NOT deployed by this stack -- it is
+              # imported from ${RegistrarStackName}. Nothing in the pipeline
+              # used to ship registrar/ at all, so handler.py changes could be
+              # committed, merged and "deployed" while the function kept
+              # running whatever was last uploaded by hand. buildspec.yml now
+              # pushes the code before reconcile.py runs; this grant is what
+              # lets it. Scoped to the one function via the same import used
+              # by InvokeRegistrar above.
+              - Sid: UpdateRegistrarCode
+                Effect: Allow
+                Action:
+                  - lambda:UpdateFunctionCode
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                Resource:
+                  Fn::ImportValue: !Sub '${RegistrarStackName}-RegistrarFunctionArn'
+
   ReconcileProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -270,6 +286,9 @@ Resources:
           - {Name: BROKER_CIDR, Value: !Ref ResourceBrokerCidr}
           - {Name: FUNCTIONAL_ACCOUNT_PUBKEY_PARAM, Value: !Ref FunctionalAccountPubKeyParam}
           - Name: REGISTRAR_ARN
+            Value:
+              Fn::ImportValue: !Sub '${RegistrarStackName}-RegistrarFunctionArn'
+          - Name: REGISTRAR_FUNCTION_NAME
             Value:
               Fn::ImportValue: !Sub '${RegistrarStackName}-RegistrarFunctionArn'
           - Name: ROLE_BOUNDARY_ARN
@@ -306,13 +325,18 @@ Resources:
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
+      # Renamed from ps-eph-l1 / ps-eph-l2 -- literal pipeline name is now
+      # Development or Production. NOTE: changing this forces CloudFormation
+      # to replace the Pipeline resource (delete + recreate), not update it
+      # in place.
       Name: !If [IsProd, Production, Development]
       PipelineType: V2
       RoleArn: !GetAtt PipelineRole.Arn
       ArtifactStore: {Type: S3, Location: !Ref ArtifactBucket}
       Stages: !If
         - IsProd
-        - - Name: Source
+        - # Production: Source -> manual approval -> Reconcile
+          - Name: Source
             Actions:
               - Name: Git
                 ActionTypeId:
@@ -335,7 +359,8 @@ Resources:
                   {Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1'}
                 Configuration: {ProjectName: !Ref ReconcileProject}
                 InputArtifacts: [{Name: Src}]
-        - - Name: Source
+        - # Development: Source -> Reconcile, unchanged
+          - Name: Source
             Actions:
               - Name: Git
                 ActionTypeId:
@@ -354,6 +379,13 @@ Resources:
                 Configuration: {ProjectName: !Ref ReconcileProject}
                 InputArtifacts: [{Name: Src}]
 
+      # Only fire when THIS team's files change. Without this, an L2 commit
+      # would run L1's pipeline.
+      #
+      # registrar/** and buildspec.yml are included deliberately: the Lambda
+      # is now shipped by the build, so a handler change has to be able to
+      # start a run. Without them a commit to registrar/handler.py triggers
+      # nothing and the function silently keeps running older code.
       Triggers:
         - ProviderType: CodeStarSourceConnection
           GitConfiguration:
@@ -365,6 +397,8 @@ Resources:
                     - !Sub 'teams/${TeamName}/**'
                     - !Sub 'config/${TeamName}.json'
                     - 'infra/**'
+                    - 'registrar/**'
+                    - 'buildspec.yml'
 
 Outputs:
   PipelineName:

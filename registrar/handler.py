@@ -53,6 +53,13 @@ PS_SECRET_ARN = os.environ["PS_SECRET_ARN"]
 # functional account must already exist in Password Safe and the registrar
 # will only look it up, never create it.
 PS_FUNCTIONAL_SECRET_ARN = os.environ.get("PS_FUNCTIONAL_SECRET_ARN") or None
+
+# EPM for Linux. Holds {"url": ..., "pat": ...}. The PAT mints short-lived
+# installation tokens; only a token ever reaches an instance, never the PAT.
+EPM_SECRET_ARN = os.environ.get(
+    "EPM_SECRET_ARN",
+    "arn:aws:secretsmanager:us-east-1:119796247110:secret:ps-ephemeral/epm-linux-3IetSP")
+EPM_TOKEN_EXPIRY_MINUTES = int(os.environ.get("EPM_TOKEN_EXPIRY_MINUTES", "30"))
 FUNCTIONAL_PUBKEY_PARAM = os.environ.get(
     "FUNCTIONAL_PUBKEY_PARAM", "/ps-ephemeral/functional-account/public-key")
 
@@ -282,6 +289,64 @@ def reprocess_rules(ps, cfg):
             log.warning("smart rule %s reprocess failed: %s", title, exc)
 
 
+def load_epm_config():
+    """
+    {"url": ..., "pat": ...}, or {} when EPM activation is not available.
+
+    Deliberately swallows every failure: a missing secret, a missing IAM
+    grant or malformed JSON must not take down environment provisioning.
+    Absent config simply means the agent is not activated, which is logged.
+    """
+    if not EPM_SECRET_ARN:
+        return {}
+    try:
+        raw = secretsmanager.get_secret_value(SecretId=EPM_SECRET_ARN)["SecretString"]
+        doc = json.loads(raw)
+    except Exception as exc:                          # noqa: BLE001
+        log.warning("EPM secret %s unreadable (%s) -- skipping agent activation",
+                    EPM_SECRET_ARN, exc)
+        return {}
+    if not doc.get("url") or not doc.get("pat"):
+        log.warning("EPM secret missing url/pat -- skipping agent activation")
+        return {}
+    return doc
+
+
+def fetch_epm_installation_token(epm):
+    """
+    Mint an installation token. The PAT is read here and never leaves this
+    function; the token that goes to the instance expires in
+    EPM_TOKEN_EXPIRY_MINUTES whether or not it is used.
+    """
+    url = "%s/btplatform/installationtoken?expiry=%d" % (
+        epm["url"].rstrip("/"), EPM_TOKEN_EXPIRY_MINUTES)
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Authorization", "Bearer %s" % epm["pat"])
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        doc = json.loads(resp.read().decode())
+    token = doc.get("token") or doc.get("Token")
+    if not token:
+        raise RuntimeError("no token in EPM response (keys: %s)" % sorted(doc))
+    return token
+
+
+def activate_epm(instance_id, token):
+    """
+    Register the endpoint with EPM-L. The token appears in SSM command
+    history, same as the managed account password does -- acceptable here
+    because it is single-purpose and short-lived, but it is the reason the
+    expiry is kept tight.
+    """
+    script = [
+        "set -euo pipefail",
+        "test -x /usr/sbin/pbactivate",
+        '/usr/sbin/pbactivate -t "%s"' % token,
+    ]
+    run_command(instance_id, script)
+    log.info("EPM-L agent activated on %s", instance_id)
+
+
 # --------------------------------------------------------------------------- #
 # lifecycle
 # --------------------------------------------------------------------------- #
@@ -311,6 +376,17 @@ def on_create(props):
     functional_name = password_safe_cfg.get("functionalAccountName", "ps-rotator")
 
     wait_for_ssm(instance_id)
+
+    # 0. EPM-L agent. Non-fatal: an unactivated agent is worth an alert, not
+    # a rolled-back environment. Flip to raise if policy says otherwise.
+    epm = load_epm_config()
+    if epm:
+        try:
+            activate_epm(instance_id, fetch_epm_installation_token(epm))
+        except Exception as exc:                      # noqa: BLE001
+            log.warning("EPM-L activation failed on %s: %s -- continuing; "
+                        "host is provisioned but unmanaged by EPM.",
+                        instance_id, exc)
 
     # 1. Functional account on the box, so Password Safe has a way in.
     functional_public_key = read_public_key()

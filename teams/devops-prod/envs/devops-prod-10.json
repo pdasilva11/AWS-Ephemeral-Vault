@@ -1,0 +1,5 @@
+{
+  "envName": "devops-prod-10",
+  "instanceType": "t3.micro",
+  "requestedBy": "pdasilva"
+}

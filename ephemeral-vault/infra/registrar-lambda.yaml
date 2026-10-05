@@ -1,0 +1,69 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Registrar Lambda for per-team IAM Roles Anywhere + Password Safe provisioning
+
+Parameters:
+  PasswordSafeBaseUrlSsmParam:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /ephemeral-vault/password-safe/base-url
+  PasswordSafeApiKeySecretArn:
+    Type: String
+    Description: Secrets Manager ARN holding the Password Safe API key (PLACEHOLDER)
+
+Resources:
+  RegistrarExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RolesAnywhereProvisioning
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rolesanywhere:CreateTrustAnchor
+                  - rolesanywhere:UpdateTrustAnchor
+                  - rolesanywhere:ListTrustAnchors
+                  - rolesanywhere:CreateProfile
+                  - rolesanywhere:UpdateProfile
+                  - rolesanywhere:ListProfiles
+                  - rolesanywhere:PutAttributeMapping
+                Resource: "*"
+              # No acm-pca:* permissions needed -- step-ca is a self-hosted,
+              # free/open-source CA, not ACM PCA. This Lambda instead needs
+              # network reachability to wherever step-ca runs (a VPC config
+              # block, most likely, which is environment-specific enough
+              # that it isn't templated here -- add one before deploying).
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref PasswordSafeApiKeySecretArn
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  RegistrarFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ps-ephemeral-vault-registrar
+      Runtime: python3.12
+      Handler: app.handler
+      Role: !GetAtt RegistrarExecutionRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          PS_BASE_URL: !Ref PasswordSafeBaseUrlSsmParam
+          PS_API_KEY_SECRET_ARN: !Ref PasswordSafeApiKeySecretArn
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              raise RuntimeError("Placeholder inline code - real code is deployed by buildspec.ephemeral-vault.yml's aws lambda update-function-code step")
+
+Outputs:
+  RegistrarFunctionArn:
+    Value: !GetAtt RegistrarFunction.Arn

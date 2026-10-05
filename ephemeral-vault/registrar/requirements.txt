@@ -1,0 +1,4 @@
+boto3>=1.34
+requests>=2.31
+cryptography>=42.0
+jwcrypto>=1.5

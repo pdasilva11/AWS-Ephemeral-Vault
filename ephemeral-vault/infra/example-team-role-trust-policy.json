@@ -1,0 +1,22 @@
+{
+  "_comment": "Example trust policy for a team's workload IAM role (e.g. example-team-dev-workload, referenced by role_arns in teams/example-team/envs/dev.json). All teams share one ACM PCA and one IAM Roles Anywhere trust anchor -- this condition is what actually enforces that only certificates issued for THIS team's common name can assume THIS role. Without it, any cert from the shared CA could assume any team's role.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "rolesanywhere.amazonaws.com"
+      },
+      "Action": [
+        "sts:AssumeRole",
+        "sts:TagSession",
+        "sts:SetSourceIdentity"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:PrincipalTag/x509Subject/CN": "example-team-dev-workload"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "role_arns": [
+    "arn:aws:iam::111111111111:role/example-team-dev-workload"
+  ],
+  "duration_seconds": 3600,
+  "cert_common_name": "example-team-dev-workload",
+  "cert_validity_days": 7
+}

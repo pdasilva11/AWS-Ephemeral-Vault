@@ -1,0 +1,10 @@
+{
+  "trust_anchor_name": "shared-trust-anchor",
+  "step_ca": {
+    "url": "https://PLACEHOLDER-step-ca.internal:9000",
+    "root_cert_pem_path": "config/step-ca-root.pem",
+    "provisioner_name": "ephemeral-vault-registrar",
+    "provisioner_kid": "PLACEHOLDER-PROVISIONER-KID"
+  },
+  "_note": "Free/open-source CA (step-ca) instead of ACM PCA -- no $50-400/mo AWS CA fee, just whatever tiny VM/container runs step-ca. See infra/bootstrap-step-ca.sh for one-time setup. The provisioner's PRIVATE JWK is deliberately not in this file -- it lives in Password Safe (safe 'shared-infra', secret 'step-ca-provisioner-jwk', see app.load_step_ca_config()). root_cert_pem_path points at the step-ca root cert bundled alongside this file -- that cert is public/non-secret, used both to tell IAM Roles Anywhere who to trust and to pin TLS when the registrar calls step-ca's API."
+}

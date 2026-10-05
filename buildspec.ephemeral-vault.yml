@@ -1,0 +1,32 @@
+version: 0.2
+
+# Separate CodeBuild project, pointed at this file by name -- does NOT
+# replace or touch the repo's existing buildspec.yml / CodeBuild project.
+# Everything it validates and deploys lives under ephemeral-vault/.
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+  pre_build:
+    commands:
+      - python -m pip install --quiet cfn-lint
+      - cfn-lint ephemeral-vault/infra/*.yaml
+      - python -c "import json,glob,sys; [json.load(open(f)) for f in glob.glob('ephemeral-vault/config/*.json')+glob.glob('ephemeral-vault/teams/*/envs/*.json')]"
+  build:
+    commands:
+      # Package registrar code + its third-party deps + the config/teams
+      # data it reads at runtime (relative to /var/task) into one zip.
+      - rm -rf /tmp/lambda-build && mkdir -p /tmp/lambda-build
+      - cp ephemeral-vault/registrar/*.py /tmp/lambda-build/
+      - pip install -r ephemeral-vault/registrar/requirements.txt -t /tmp/lambda-build --quiet
+      - cp -r ephemeral-vault/config /tmp/lambda-build/config
+      - cp -r ephemeral-vault/teams /tmp/lambda-build/teams
+      - cd /tmp/lambda-build && zip -qr /tmp/ephemeral-vault-registrar.zip . && cd -
+      - aws lambda update-function-code --function-name ps-ephemeral-vault-registrar --zip-file fileb:///tmp/ephemeral-vault-registrar.zip
+      - aws lambda wait function-updated --function-name ps-ephemeral-vault-registrar
+      - cd ephemeral-vault && python scripts/reconcile.py --team "$TEAM" --apply && cd ..
+artifacts:
+  files:
+    - ephemeral-vault/infra/**/*
+    - ephemeral-vault/teams/**/*

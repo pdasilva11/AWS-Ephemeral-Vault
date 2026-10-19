@@ -54,6 +54,9 @@ jobs:
       WLC_SERVICE_NAME: PDS_Pipeline_dev
       # Full path of the dynamic secret, e.g. /Dev/deployer2 (repo variable).
       WLC_SECRET_PATH: ${{ vars.WLC_SECRET_PATH }}
+      # OIDC audience BeyondTrust expects (repo variable). Leave unset to use
+      # GitHub's default, https://github.com/<owner>.
+      WLC_AUDIENCE: ${{ vars.WLC_AUDIENCE }}
       # Same values the CodeBuild project ps-eph-reconcile-devops-dev uses.
       REGISTRAR_ARN: ${{ vars.REGISTRAR_ARN }}
       ROLE_BOUNDARY_ARN: ${{ vars.ROLE_BOUNDARY_ARN }}
@@ -71,27 +74,40 @@ jobs:
       - run: pip install --quiet boto3
 
       - name: Install wlc
-        # Assumes the Linux binary is attached to a release named wlc-cli in this repo.
+        # The Linux binary is attached to the release named wlc-cli in this repo.
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           gh release download wlc-cli -p wlc-linux-amd64 -O wlc
           chmod +x wlc
+          ./wlc version
 
       - name: Get short-lived AWS credentials (workload identity)
         run: |
           set +x
-          # 1. GitHub OIDC token. UNVERIFIED: the audience Workload Credentials expects.
-          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${WLC_AUDIENCE:-REPLACE_AUDIENCE}" | jq -r .value)
+          # 1. GitHub OIDC token. Omit the audience parameter unless WLC_AUDIENCE is set.
+          URL="$ACTIONS_ID_TOKEN_REQUEST_URL"
+          if [ -n "$WLC_AUDIENCE" ]; then URL="$URL&audience=$WLC_AUDIENCE"; fi
+          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$URL" | jq -r .value)
           echo "::add-mask::$OIDC"
-          # 2. Ask for the team's dynamic secret. UNVERIFIED: whether wlc exchanges the
-          #    GitHub token itself when --service-name is given.
+          # Show the claims BeyondTrust matches on (no secret in these) so a denied
+          # exchange can be compared with the workload identity's conditions.
+          echo "$OIDC" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null \
+            | jq '{iss,aud,sub,repository,repository_id,repository_owner_id,ref,actor}' || true
+
+          # 2. Request the dynamic secret. stdin is not a TTY on a runner, so give wlc
+          #    an empty stdin or it complains about piped input.
+          #    UNVERIFIED: whether wlc exchanges the GitHub token itself.
           JSON=$(./wlc dynamic generate "${WLC_SECRET_PATH:?set the WLC_SECRET_PATH repo variable}" \
             --token "$OIDC" --service-name "$WLC_SERVICE_NAME" \
-            --site-id "$WLC_SITE_ID" --format json --no-input)
-          AK=$(echo "$JSON" | jq -r '(.secret // .).accessKeyId')
-          SK=$(echo "$JSON" | jq -r '(.secret // .).secretAccessKey')
-          ST=$(echo "$JSON" | jq -r '(.secret // .).sessionToken')
+            --site-id "$WLC_SITE_ID" --format json --no-input < /dev/null)
+
+          AK=$(echo "$JSON" | jq -r '(.secret // .).accessKeyId // empty')
+          SK=$(echo "$JSON" | jq -r '(.secret // .).secretAccessKey // empty')
+          ST=$(echo "$JSON" | jq -r '(.secret // .).sessionToken // empty')
+          if [ -z "$AK" ] || [ -z "$SK" ] || [ -z "$ST" ]; then
+            echo "::error::wlc did not return AWS credentials. Response keys: $(echo "$JSON" | jq -c 'paths|join(".")' 2>/dev/null | tr '\n' ' ')"
+            exit 1
+          fi
           for v in "$AK" "$SK" "$ST"; do echo "::add-mask::$v"; done
           {
             echo "AWS_ACCESS_KEY_ID=$AK"

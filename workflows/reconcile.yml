@@ -1,0 +1,114 @@
+name: reconcile-devops-dev
+
+# Replaces CodePipeline "Development" (infra/pipeline.yaml, TeamName=devops-dev):
+#   Source -> Reconcile, auto-deploy on push to main, same path filters.
+#
+# Matches workload identity "PDS_Pipeline_dev" (actor = ramon01pro):
+#   sub = repo:pdasilva11/AWS-Ephemeral-Vault:ref:refs/heads/main
+# Do NOT add `environment:` to the deploy job, or the OIDC `sub` claim changes and the
+# exchange will be denied (unless you re-register the identity with an Environment condition).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'teams/devops-dev/**'
+      - 'config/devops-dev.json'
+      - 'infra/**'
+      - 'registrar/**'
+      - 'scripts/**'
+      - '.github/workflows/reconcile.yml'
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reconcile-devops-dev   # never run two reconciles for the same team at once
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    # No credentials: safe for pull requests, including forks.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install --quiet cfn-lint
+      - run: cfn-lint infra/*.yaml
+      - run: python -c "import json,glob; [json.load(open(f)) for f in glob.glob('config/*.json')+glob.glob('teams/*/envs/*.json')]"
+
+  deploy:
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # lets the job request a GitHub OIDC token
+      contents: read
+    env:
+      TEAM: devops-dev
+      AWS_DEFAULT_REGION: us-east-1
+      WLC_SITE_ID: 432f36cf-46e2-4eb7-9e0a-5f928da51b6e
+      WLC_SERVICE_NAME: PDS_Pipeline_dev
+      # Full path of the dynamic secret, e.g. /Dev/devops-dev/deployer (repo variable).
+      WLC_SECRET_PATH: ${{ vars.WLC_SECRET_PATH }}
+      # Same values the CodeBuild project ps-eph-reconcile-devops-dev uses.
+      REGISTRAR_ARN: ${{ vars.REGISTRAR_ARN }}
+      ROLE_BOUNDARY_ARN: ${{ vars.ROLE_BOUNDARY_ARN }}
+      VPC_ID: ${{ vars.VPC_ID }}
+      SUBNET_ID: ${{ vars.SUBNET_ID }}
+      CFN_EXEC_ROLE: ${{ vars.CFN_EXEC_ROLE }}
+      BROKER_CIDR: ${{ vars.BROKER_CIDR }}
+      OWNER_TAG: ${{ vars.OWNER_TAG }}
+      STACK_PREFIX: ${{ vars.STACK_PREFIX }}
+      FUNCTIONAL_ACCOUNT_PUBKEY_PARAM: ${{ vars.FUNCTIONAL_ACCOUNT_PUBKEY_PARAM }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install --quiet boto3
+
+      - name: Install wlc
+        # Assumes the Linux binary is attached to a release named wlc-cli in this repo.
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          gh release download wlc-cli -p wlc-linux-amd64 -O wlc
+          chmod +x wlc
+
+      - name: Get short-lived AWS credentials (workload identity)
+        run: |
+          set +x
+          # 1. GitHub OIDC token. UNVERIFIED: the audience Workload Credentials expects.
+          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${WLC_AUDIENCE:-REPLACE_AUDIENCE}" | jq -r .value)
+          echo "::add-mask::$OIDC"
+          # 2. Ask for the team's dynamic secret. UNVERIFIED: whether wlc exchanges the
+          #    GitHub token itself when --service-name is given.
+          JSON=$(./wlc dynamic generate "${WLC_SECRET_PATH:?set the WLC_SECRET_PATH repo variable}" \
+            --token "$OIDC" --service-name "$WLC_SERVICE_NAME" \
+            --site-id "$WLC_SITE_ID" --format json --no-input)
+          AK=$(echo "$JSON" | jq -r '(.secret // .).accessKeyId')
+          SK=$(echo "$JSON" | jq -r '(.secret // .).secretAccessKey')
+          ST=$(echo "$JSON" | jq -r '(.secret // .).sessionToken')
+          for v in "$AK" "$SK" "$ST"; do echo "::add-mask::$v"; done
+          {
+            echo "AWS_ACCESS_KEY_ID=$AK"
+            echo "AWS_SECRET_ACCESS_KEY=$SK"
+            echo "AWS_SESSION_TOKEN=$ST"
+          } >> "$GITHUB_ENV"
+
+      - name: Confirm assumed role
+        run: aws sts get-caller-identity --query Arn --output text
+
+      # Same as buildspec.yml: ship registrar/ before reconciling, so the deployed
+      # function always matches what is on main.
+      - name: Deploy registrar code
+        run: |
+          cd registrar && zip -qr /tmp/registrar.zip . && cd ..
+          aws lambda update-function-code --function-name "$REGISTRAR_ARN" --zip-file fileb:///tmp/registrar.zip
+          aws lambda wait function-updated --function-name "$REGISTRAR_ARN"
+
+      - name: Reconcile
+        run: python scripts/reconcile.py --team "$TEAM"

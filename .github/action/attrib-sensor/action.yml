@@ -1,0 +1,41 @@
+name: Attrib runner sensor
+description: >
+  Records every DNS lookup, outbound connection, program run and source file changed in this job, maps them
+  to the step, and can block egress to anything not on an allowlist. The Attrib console joins it with the
+  run's secret reads, cloud credentials and cloud changes. GitHub-hosted and self-hosted Linux runners.
+inputs:
+  egress-policy:
+    description: audit (record only) or block (reject connections to anything not in allowed-endpoints)
+    required: false
+    default: audit
+  allowed-endpoints:
+    description: >
+      Domains (wildcards like *.amazonaws.com allowed), IPs or CIDRs this job may reach, one per line.
+      GitHub's own endpoints are always allowed. The run's step summary suggests a list from audit mode.
+    required: false
+    default: ""
+  console-url:
+    description: Optional. Stream records live to the Attrib console (https://console.example.com).
+    required: false
+    default: ""
+  ingest-token:
+    description: Optional. The console's ingest token, from a repository secret.
+    required: false
+    default: ""
+  artifact-name:
+    description: Artifact name prefix the console pulls. Must start with attrib-sensor.
+    required: false
+    default: attrib-sensor
+  retention-days:
+    description: How long GitHub keeps the artifact.
+    required: false
+    default: "30"
+  fail-on-error:
+    description: '"true" fails the job if the sensor can''t start (default: warn and continue).'
+    required: false
+    default: "false"
+runs:
+  using: node20
+  main: dist/main.js
+  post: dist/post.js
+  post-if: always()

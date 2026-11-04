@@ -7,7 +7,6 @@ try {
       const msg = "attrib-sensor didn't start; the job runs unmonitored.";
       if ((core.getInput("fail-on-error") || "false") === "true") core.setFailed(msg); else core.warning(msg);
     } else {
-      fs.writeFileSync(path.join(DIR, "action-started"), "1");
       core.saveState("started", "1");
     }
   }

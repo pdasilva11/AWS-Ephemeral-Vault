@@ -60,6 +60,17 @@ def now() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+# each destination is one record (first time + count); it also keeps up to MAX_TIMES later connection times,
+# at least TIME_SPACING_S apart, so a later call to the same host (e.g. the credential broker after a secret
+# read) still has its own timestamp
+MAX_TIMES, TIME_SPACING_S = 20, 5.0
+
+
+def _secs(a: str, b: str) -> float:
+    p = lambda s: dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return (p(b) - p(a)).total_seconds()
+
+
 def redact(s: str) -> str:
     for rx, rep in SECRET_PATTERNS:
         s = rx.sub(rep, s)
@@ -373,6 +384,11 @@ class Sensor:
                 r["count"] = r.get("count", 1) + 1
                 if rec.get("domain") and not r.get("domain"):
                     r["domain"] = rec["domain"]
+                times = r.setdefault("times", [r["time"]])
+                if r.get("type") == "egress" and len(times) < MAX_TIMES and _secs(times[-1], rec["time"]) >= TIME_SPACING_S:
+                    times.append(rec["time"])
+                    self.pending.append({"key": r["key"], "update": True, "type": r["type"], "time": r["time"],
+                                         "times": [rec["time"]]})
                 return
             rec["count"] = 1
             rec["key"] = hashlib.sha256(f"{self.run_id}:{key}".encode()).hexdigest()[:24]

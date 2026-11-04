@@ -826,10 +826,26 @@ def cmd_stop() -> int:
     return 0
 
 
+def load_env_file(argv: list[str]) -> list[str]:
+    """The action passes its settings in a file (sudo may drop the environment); load and delete it."""
+    if "--env-file" not in argv:
+        return argv
+    i = argv.index("--env-file")
+    path = argv[i + 1] if i + 1 < len(argv) else ""
+    try:
+        with open(path) as f:
+            os.environ.update({k: str(v) for k, v in json.load(f).items()})
+        os.remove(path)
+    except (OSError, ValueError) as e:
+        print(f"attrib-sensor: couldn't read settings file: {e}", file=sys.stderr)
+    return argv[:i] + argv[i + 2:]
+
+
 if __name__ == "__main__":
+    sys.argv = load_env_file(sys.argv)
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
     if os.geteuid() != 0:
-        print("attrib-sensor needs root (run with sudo -E).", file=sys.stderr)
+        print("attrib-sensor needs root (run it with sudo).", file=sys.stderr)
         sys.exit(1)
     if cmd == "start":
         sys.exit(cmd_start())

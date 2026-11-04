@@ -1,6 +1,6 @@
 name: reconcile-devops-dev
 
-# Replaces CodePipeline "Development" (infra/pipeline.yaml, TeamName=devops-dev):
+# Replaces CodePipeline "#Development" (infra/pipeline.yaml, TeamName=devops-dev):
 #   Source -> Reconcile, auto-deploy on push to main, same path filters.
 #
 # Matches workload identity "PDS_Pipeline_dev" (actor = pdasilva11 or ramon01pro):

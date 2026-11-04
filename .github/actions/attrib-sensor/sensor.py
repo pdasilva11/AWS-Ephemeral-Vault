@@ -821,9 +821,41 @@ def cmd_stop() -> int:
     path = os.path.join(s.dir, "summary.json")
     if os.path.exists(path):
         summary = json.load(open(path))
+        leases = read_wlc_leases()
+        if leases:
+            summary["wlc_leases"] = leases
+            with open(path, "w") as f:
+                json.dump(summary, f)
+            print(f"attrib-sensor: {len(leases)} Workload Credentials lease(s) reported")
         n = len(summary["records"])
         print(f"attrib-sensor: stopped; {n} records in {path}")
     return 0
+
+
+# The job writes one line per `wlc dynamic generate`: "<leaseId> <sha256 of the access key ID>" (no secrets). The
+# console uses it to tie the broker-issued credential to this run exactly.
+WLC_LEASES_FILE = "attrib-wlc-leases"
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def read_wlc_leases() -> list[dict]:
+    path = os.path.join(os.environ.get("RUNNER_TEMP") or "/tmp", WLC_LEASES_FILE)
+    out = []
+    try:
+        lines = open(path).read().splitlines()[:200]
+    except OSError:
+        return out
+    for line in lines:
+        lease = key = ""
+        for part in line.split():
+            if _UUID.match(part):
+                lease = part.lower()
+            elif _HEX64.match(part):
+                key = part.lower()
+        if lease or key:
+            out.append({"lease_id": lease, "key_sha256": key})
+    return out
 
 
 def load_env_file(argv: list[str]) -> list[str]:
@@ -852,3 +884,4 @@ if __name__ == "__main__":
     if cmd == "stop":
         sys.exit(cmd_stop())
     Sensor().run(ready_file=os.environ.get("ATTRIB_READY_FILE"))
+

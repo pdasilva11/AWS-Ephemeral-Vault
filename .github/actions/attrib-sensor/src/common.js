@@ -34,9 +34,20 @@ function env() {
   return e;
 }
 
+// Settings reach the root sensor in a file, not through sudo: newer runner images ship a sudo that ignores -E
+// (and --preserve-env varies). Only what the sensor reads is written, mode 0600; the sensor deletes it on read.
+const PASS = /^(GITHUB_|RUNNER_|ATTRIB_)|^(PATH|HOME)$/;
+
 function sensor(cmd) {
-  // sudo -E keeps GITHUB_* and ATTRIB_* variables; the sensor itself never prints secrets
-  return spawnSync("sudo", ["-E", "python3", SENSOR, cmd], { stdio: "inherit", env: env() });
+  const vars = Object.fromEntries(Object.entries(env()).filter(([k, v]) => PASS.test(k) && v !== undefined));
+  const file = path.join(process.env.RUNNER_TEMP || "/tmp", `attrib-sensor-${cmd}-${process.pid}.json`);
+  fs.writeFileSync(file, JSON.stringify(vars), { mode: 0o600 });
+  try {
+    return spawnSync("sudo", ["-n", "python3", SENSOR, cmd, "--env-file", file], { stdio: "inherit", env: env() });
+  } finally {
+    try { fs.unlinkSync(file); } catch (_) { /* the sensor already removed it */ }
+  }
 }
 
 module.exports = { core, fs, path, DIR, supported, sensor };
+

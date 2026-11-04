@@ -1,6 +1,6 @@
 name: reconcile-devops-dev
 
-# Replaces CodePipeline "#Development" (infra/pipeline.yaml, TeamName=devops-dev):
+# Replaces CodePipeline "Development" (infra/pipeline.yaml, TeamName=devops-dev):
 #   Source -> Reconcile, auto-deploy on push to main, same path filters.
 #
 # Matches workload identity "PDS_Pipeline_dev" (actor = pdasilva11 or ramon01pro):
@@ -117,6 +117,10 @@ jobs:
             echo "::error::wlc did not return AWS credentials. Response keys: $(echo "$JSON" | jq -c 'paths|join(".")' 2>/dev/null | tr '\n' ' ')"
             exit 1
           fi
+          # Attrib: report this run's lease ID and a SHA-256 of the access key ID (no secrets). The runner
+          # sensor adds them to the run's artifact so the console links the broker credential to this run exactly.
+          LEASE=$(echo "$JSON" | jq -r '(.secret // .).leaseId // empty')
+          echo "$LEASE $(printf %s "$AK" | sha256sum | cut -c1-64)" >> "$RUNNER_TEMP/attrib-wlc-leases"
           for v in "$AK" "$SK" "$ST"; do echo "::add-mask::$v"; done
           {
             echo "AWS_ACCESS_KEY_ID=$AK"

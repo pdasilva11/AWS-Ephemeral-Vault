@@ -19849,8 +19849,19 @@ var require_common = __commonJS({
       if (e.ATTRIB_INGEST_TOKEN) core2.setSecret(e.ATTRIB_INGEST_TOKEN);
       return e;
     }
+    var PASS = /^(GITHUB_|RUNNER_|ATTRIB_)|^(PATH|HOME)$/;
     function sensor2(cmd) {
-      return spawnSync("sudo", ["-E", "python3", SENSOR, cmd], { stdio: "inherit", env: env() });
+      const vars = Object.fromEntries(Object.entries(env()).filter(([k, v]) => PASS.test(k) && v !== void 0));
+      const file = path2.join(process.env.RUNNER_TEMP || "/tmp", `attrib-sensor-${cmd}-${process.pid}.json`);
+      fs2.writeFileSync(file, JSON.stringify(vars), { mode: 384 });
+      try {
+        return spawnSync("sudo", ["-n", "python3", SENSOR, cmd, "--env-file", file], { stdio: "inherit", env: env() });
+      } finally {
+        try {
+          fs2.unlinkSync(file);
+        } catch (_2) {
+        }
+      }
     }
     module2.exports = { core: core2, fs: fs2, path: path2, DIR: DIR2, supported, sensor: sensor2 };
   }
@@ -133134,3 +133145,96 @@ async function run() {
   core.info(`attrib-sensor: uploaded ${files.length} files as ${name}-${job}`);
 }
 run().catch((e) => core.warning(`attrib-sensor post step: ${e.message}`));
+/*! Bundled license information:
+
+undici/lib/fetch/body.js:
+  (*! formdata-polyfill. MIT License. Jimmy Wärting <https://jimmy.warting.se/opensource> *)
+
+undici/lib/websocket/frame.js:
+  (*! ws. MIT License. Einar Otto Stangvik <einaros@gmail.com> *)
+
+normalize-path/index.js:
+  (*!
+   * normalize-path <https://github.com/jonschlinkert/normalize-path>
+   *
+   * Copyright (c) 2014-2018, Jon Schlinkert.
+   * Released under the MIT License.
+   *)
+
+safe-buffer/index.js:
+  (*! safe-buffer. MIT License. Feross Aboukhadijeh <https://feross.org/opensource> *)
+
+archiver/lib/error.js:
+  (**
+   * Archiver Core
+   *
+   * @ignore
+   * @license [MIT]{@link https://github.com/archiverjs/node-archiver/blob/master/LICENSE}
+   * @copyright (c) 2012-2014 Chris Talkington, contributors.
+   *)
+
+archiver/lib/core.js:
+  (**
+   * Archiver Core
+   *
+   * @ignore
+   * @license [MIT]{@link https://github.com/archiverjs/node-archiver/blob/master/LICENSE}
+   * @copyright (c) 2012-2014 Chris Talkington, contributors.
+   *)
+
+crc-32/crc32.js:
+  (*! crc32.js (C) 2014-present SheetJS -- http://sheetjs.com *)
+
+zip-stream/index.js:
+  (**
+   * ZipStream
+   *
+   * @ignore
+   * @license [MIT]{@link https://github.com/archiverjs/node-zip-stream/blob/master/LICENSE}
+   * @copyright (c) 2014 Chris Talkington, contributors.
+   *)
+
+archiver/lib/plugins/zip.js:
+  (**
+   * ZIP Format Plugin
+   *
+   * @module plugins/zip
+   * @license [MIT]{@link https://github.com/archiverjs/node-archiver/blob/master/LICENSE}
+   * @copyright (c) 2012-2014 Chris Talkington, contributors.
+   *)
+
+archiver/lib/plugins/tar.js:
+  (**
+   * TAR Format Plugin
+   *
+   * @module plugins/tar
+   * @license [MIT]{@link https://github.com/archiverjs/node-archiver/blob/master/LICENSE}
+   * @copyright (c) 2012-2014 Chris Talkington, contributors.
+   *)
+
+archiver/lib/plugins/json.js:
+  (**
+   * JSON Format Plugin
+   *
+   * @module plugins/json
+   * @license [MIT]{@link https://github.com/archiverjs/node-archiver/blob/master/LICENSE}
+   * @copyright (c) 2012-2014 Chris Talkington, contributors.
+   *)
+
+archiver/index.js:
+  (**
+   * Archiver Vending
+   *
+   * @ignore
+   * @license [MIT]{@link https://github.com/archiverjs/node-archiver/blob/master/LICENSE}
+   * @copyright (c) 2012-2014 Chris Talkington, contributors.
+   *)
+
+is-plain-object/dist/is-plain-object.js:
+  (*!
+   * is-plain-object <https://github.com/jonschlinkert/is-plain-object>
+   *
+   * Copyright (c) 2014-2017, Jon Schlinkert.
+   * Released under the MIT License.
+   *)
+*/

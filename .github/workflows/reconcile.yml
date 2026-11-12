@@ -70,6 +70,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # CVE-2026-109518: GitHub's Ubuntu image ships an unpatched apt; with retries off the package swap can't happen
+      - name: apt without retries
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries
+
       # Tephra runner sensor: records every DNS lookup, connection and program in this job, and blocks
       # anything not listed below. Records stream live to Tephra Trace, so they survive a deleted run.
       - name: Tephra runner sensor

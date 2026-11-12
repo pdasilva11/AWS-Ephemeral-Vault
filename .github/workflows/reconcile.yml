@@ -70,13 +70,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Records every DNS lookup, connection and program in this job, mapped to the step,
-      # so Attrib can see when the runner called the credential broker. Audit mode never blocks.
-      # The console pulls its artifact (attrib-sensor-deploy) after the run.
-      - name: Attrib runner sensor
-        uses: ./.github/actions/attrib-sensor
+      # Tephra runner sensor: records every DNS lookup, connection and program in this job, and blocks
+      # anything not listed below. Records stream live to Tephra Trace, so they survive a deleted run.
+      - name: Tephra runner sensor
+        uses: tephrasecurity/sensor@b3a09f0bd75bb910aa13ceda391ff1a85ccaa58a # v1.0.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: |
+            sts.us-east-1.amazonaws.com
+            lambda.us-east-1.amazonaws.com
+            cloudformation.us-east-1.amazonaws.com
+            pypi.org
+            files.pythonhosted.org
+            api.beyondtrust.io
+            trace.tephrasecurity.com
+          console-url: https://trace.tephrasecurity.com
+          ingest-token: ${{ secrets.TEPHRA_INGEST_TOKEN }}
 
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
@@ -120,7 +129,7 @@ jobs:
           # Attrib: report this run's lease ID and a SHA-256 of the access key ID (no secrets). The runner
           # sensor adds them to the run's artifact so the console links the broker credential to this run exactly.
           LEASE=$(echo "$JSON" | jq -r '(.secret // .).leaseId // empty')
-          echo "$LEASE $(printf %s "$AK" | sha256sum | cut -c1-64)" >> "$RUNNER_TEMP/attrib-wlc-leases"
+          echo "$LEASE $(printf %s "$AK" | sha256sum | cut -c1-64)" >> "$RUNNER_TEMP/tephra-wlc-leases"
           for v in "$AK" "$SK" "$ST"; do echo "::add-mask::$v"; done
           {
             echo "AWS_ACCESS_KEY_ID=$AK"

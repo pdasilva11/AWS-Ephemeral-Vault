@@ -153,3 +153,5 @@ jobs:
 
       - name: Reconcile
         run: python scripts/reconcile.py --team "$TEAM"
+
+# Tephra baseline: apt retries off since 2026-11-12

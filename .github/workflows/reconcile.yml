@@ -72,7 +72,11 @@ jobs:
 
       # CVE-2026-109518: GitHub's Ubuntu image ships an unpatched apt; with retries off the package swap can't happen
       - name: apt without retries
-        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries
+        run: |
+          echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/zzz-no-retries
+          echo 'Acquire::Retries "0";' | sudo tee -a /etc/apt/apt.conf
+          grep -rn -i retries /etc/apt/ || true
+          apt-config dump Acquire::Retries
 
       # Tephra runner sensor: records every DNS lookup, connection and program in this job, and blocks
       # anything not listed below. Records stream live to Tephra Trace, so they survive a deleted run.

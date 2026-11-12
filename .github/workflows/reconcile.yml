@@ -73,7 +73,7 @@ jobs:
       # Tephra runner sensor: records every DNS lookup, connection and program in this job, and blocks
       # anything not listed below. Records stream live to Tephra Trace, so they survive a deleted run.
       - name: Tephra runner sensor
-        uses: tephrasecurity/sensor@5c3506615620960c8843fe00da2bae600f6e0236 # v1.0.3
+        uses: tephrasecurity/sensor@bd530d3d23f95c0eeb399c25e839a91389a23cc3 # v1.1.0
         with:
           egress-policy: block
           allowed-endpoints: |
@@ -85,7 +85,6 @@ jobs:
             api.beyondtrust.io
             trace.tephrasecurity.com
           console-url: https://trace.tephrasecurity.com
-          ingest-token: ${{ secrets.TEPHRA_INGEST_TOKEN }}
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }

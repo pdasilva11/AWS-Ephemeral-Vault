@@ -33,10 +33,10 @@ jobs:
     # No credentials: safe for pull requests, including forks.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
-      - run: pip install --quiet cfn-lint
+      - run: pip install --quiet --require-hashes -r .github/requirements-lint.txt
       - run: cfn-lint infra/*.yaml
       - run: python -c "import json,glob; [json.load(open(f)) for f in glob.glob('config/*.json')+glob.glob('teams/*/envs/*.json')]"
 
@@ -68,7 +68,7 @@ jobs:
       STACK_PREFIX: ${{ vars.STACK_PREFIX }}
       FUNCTIONAL_ACCOUNT_PUBKEY_PARAM: ${{ vars.FUNCTIONAL_ACCOUNT_PUBKEY_PARAM }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Tephra runner sensor: records every DNS lookup, connection and program in this job, and blocks
       # anything not listed below. Records stream live to Tephra Trace, so they survive a deleted run.
@@ -87,9 +87,9 @@ jobs:
           console-url: https://trace.tephrasecurity.com
           ingest-token: ${{ secrets.TEPHRA_INGEST_TOKEN }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
-      - run: pip install --quiet boto3
+      - run: pip install --quiet --require-hashes -r .github/requirements-deploy.txt
 
       - name: Install wlc
         # The Linux binary is attached to the release named wlc-cli in this repo.

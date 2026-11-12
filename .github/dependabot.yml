@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # keeps the SHA-pinned actions up to date (with the version in the comment)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+    cooldown: {default-days: 3}
+  # keeps the hash-pinned pip requirements up to date
+  - package-ecosystem: pip
+    directory: /.github
+    schedule: {interval: weekly}
+    cooldown: {default-days: 3}

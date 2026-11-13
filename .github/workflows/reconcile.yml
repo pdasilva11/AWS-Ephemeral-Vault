@@ -81,7 +81,7 @@ jobs:
       # Tephra runner sensor: records every DNS lookup, connection and program in this job, and blocks
       # anything not listed below. Records stream live to Tephra Trace, so they survive a deleted run.
       - name: Tephra runner sensor
-        uses: tephrasecurity/sensor@1c237a71088f40e8865d31625320e69f949a840f # v1.2.0
+        uses: tephrasecurity/sensor@d79be5ca62dfe2dfd00fd1c40b5a51d1bdaa2449 # v1.3.0
         with:
           egress-policy: block
           allowed-endpoints: |
